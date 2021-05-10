@@ -1,0 +1,647 @@
+---
+title: Clubhouse
+output:
+  # analytics_portal is based on html_document.
+  # You can use the same options for that format.
+  disseminate::analytics_portal:
+    toc: yes
+    toc_float: yes
+    df_print: paged
+    code_folding: hide
+# In order to publish, you need to verify whether the document contains
+# user data (see https://our.internmc.facebook.com/intern/wiki/Deletion-framework/user-data/
+# for how it is defined).
+# You also need to update the certified_on field to the date the document is published on to
+# ANP, with the understanding that you as the author have verified the claim on that date.
+user_data:
+  contains_user_data: yes
+  certified_on: 2019-09-15
+params:
+  date: !r Sys.Date()
+---
+```{r}
+#Load Packages
+library(tidyverse)
+library(fbr)
+library(ggridges)
+library(ggthemes)
+```
+
+```{r}
+
+app_data <- "SELECT
+    ds,
+    CASE
+        WHEN apptopia_app_id = '1503133294' THEN 'Clubhouse'
+        WHEN apptopia_app_id = '454638411' THEN 'Facebook'
+        WHEN apptopia_app_id = '389801252' THEN 'Instagram'
+        WHEN apptopia_app_id = '985746746' THEN 'Discord'
+        WHEN apptopia_app_id = '544007664' THEN 'Youtube'
+        WHEN apptopia_app_id = '835599320' THEN 'TikTok'
+        when apptopia_app_id = '284035177' then 'Pandora'
+        when apptopia_app_id = '324684580' then 'Spotify'
+        when apptopia_app_id = '1351168404' THEN 'Among Us'
+        when apptopia_app_id = '431946152' THEN 'Roblox'
+        WHEN apptopia_app_id = '1446075923' THEN 'Disney +'
+    END AS app,
+    SUM(downloads) AS downloads,
+    SUM(SUM(downloads)) OVER (
+        PARTITION BY CASE
+        WHEN apptopia_app_id = '1503133294' THEN 'Clubhouse'
+        WHEN apptopia_app_id = '454638411' THEN 'Facebook'
+        WHEN apptopia_app_id = '389801252' THEN 'Instagram'
+        WHEN apptopia_app_id = '985746746' THEN 'Discord'
+        WHEN apptopia_app_id = '544007664' THEN 'Youtube'
+        WHEN apptopia_app_id = '835599320' THEN 'TikTok'
+        when apptopia_app_id = '284035177' then 'Pandora'
+        when apptopia_app_id = '324684580' then 'Spotify'
+        when apptopia_app_id = '1351168404' THEN 'Among Us'
+        when apptopia_app_id = '431946152' THEN 'Roblox'
+        WHEN apptopia_app_id = '1446075923' THEN 'Disney +'
+    END
+        ORDER BY
+            ds rows BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    ) AS cumulative_downloads,
+    SUM(dau) AS dau,
+    SUM(mau) AS mau,
+    1.0 * SUM(dau) / SUM(mau) AS dau_over_mau
+
+FROM apptopia_app_estimates
+WHERE
+    store = 'apple'
+    AND country_iso = 'US'
+    AND apptopia_app_id IN (
+        '1503133294',
+        '454638411',
+        '389801252',
+        '985746746',
+        '544007664',
+        '835599320', 
+        '284035177',
+        '324684580',
+        '1351168404',
+        '431946152', 
+        '1446075923'
+    )
+GROUP BY
+    1, 2" %>% presto("platform")
+```
+
+```{r}
+clubhouse_data <- app_data %>% 
+  filter(app == 'Clubhouse') %>% 
+  mutate(week = row_number())
+
+clubhouse_data_test <- clubhouse_data %>% 
+  arrange(ds) %>% 
+  head(14)
+```
+
+```{r}
+
+test_params <- function(data, params) {
+  dau_index <- which(colnames(clubhouse_data_test) == 'dau')
+  week_index <- which(colnames(clubhouse_data_test) == 'week')
+
+#build out param function
+sum_of_squares <- apply(data, 1, function(x) {
+  sum_of_squares <- 0
+  dau <- as.numeric(x[dau_index])
+  week <- x[week_index]
+  
+  train_small <- data[1:week,]
+  
+  max_week <- max(train_small$week)
+  train_small$tenure <- max_week - train_small$week + 1
+  
+  sum_retained <- 0 
+  for (i in 1:nrow(train_small)) {
+    retained_dau <- train_small[train_small$tenure == i, ]$downloads * params[i]
+    sum_retained <- sum_retained + retained_dau
+  }
+  
+  square <- (dau - sum_retained)^2
+  
+  sum_of_squares <- sum_of_squares + square
+  sum_of_squares
+}) 
+  
+  return(sum(sum_of_squares))
+  
+}
+
+test_params(clubhouse_data_test, rep(.5, nrow(clubhouse_data_test)))
+```
+
+```{r}
+#optim try
+optimized <- optim(par = rep(.5, nrow(clubhouse_data_test)),
+     fn = test_params,
+     data = clubhouse_data_test,
+     lower = c(.2),
+     upper = c(1))
+
+plot(optimized$par)
+```
+
+```{r}
+#cleaning up and making functional
+exponential <- function(par1, par2, seq) {
+  v <- par1 + exp(-par2 * seq)
+  v[v > 1] <- 1
+  v[v < 0] <- 0
+  return(v)
+}
+
+logarithmic <- function(par1, par2, seq) {
+  v <- par1 - par2*log(seq)
+  v[v > 1] <- 1
+  v[v < 0] <- 0
+  return(v)
+}
+
+divisive <- function(par1, par2, seq) {
+  v <- 1 / (par1 + seq^par2)
+  v[v > 1] <- 1
+  v[v < 0] <- 0
+  return(v)
+}
+```
+
+```{r}
+
+
+#functional function
+ret_functional <- function(data, f, params) {
+  dau_index <- which(colnames(clubhouse_data_test) == 'mau')
+  week_index <- which(colnames(clubhouse_data_test) == 'week')
+
+#build out param function
+  sum_of_squares <- apply(data, 1, function(x) {
+    sum_of_squares <- 0
+    dau <- as.numeric(x[dau_index])
+    week <- x[week_index]
+    
+    train_small <- data[1:week,]
+    
+    max_week <- max(train_small$week)
+    train_small$tenure <- max_week - train_small$week + 1
+    
+    #apply function
+    if (f == 'exp') {
+      retained_pct <- exponential(params[1], params[2], train_small$tenure)
+    } else if (f == 'log') {
+      retained_pct <- logarithmic(params[1], params[2], train_small$tenure)
+    } else if (f == 'div') {
+      retained_pct <- divisive(params[1], params[2], train_small$tenure)
+    }
+    
+    total_values <- train_small$downloads * retained_pct
+    
+    #get error
+    square <- (dau - sum(total_values))^2
+    
+    #sum error
+    sum_of_squares <- sum_of_squares + square
+    sum_of_squares
+  }) 
+  
+  return(sum(sum_of_squares))
+  
+}
+
+ret_functional(clubhouse_data_test, 'exp', c(.7, .9))
+```
+
+
+```{r}
+
+#optimize
+optimized <- optim(par = c(.5, .5),
+     fn = ret_functional,
+     f = 'exp',
+     data = clubhouse_data,
+     lower = c(0),
+     upper = c(1))
+
+optimized
+```
+
+```{r}
+
+#plot result
+clubhouse_retention <- data.frame(app = 'Clubhouse',
+                                  day_tenure = seq(1,365), 
+                                  retained_pct = exponential(optimized$par[1], optimized$par[2], seq(1, 365))
+                                  )
+
+ggplot(clubhouse_retention, aes(x = day_tenure, y = retained_pct, color = app)) +
+  geom_line(size = 2) +
+  theme_minimal() +
+  xlab('Tenure in Days') +
+  ylab('% DAP') +
+  guides(color = FALSE) +
+  xlab("Days Since Install") +
+  ylab("% MAP Retained") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  scale_color_manual(values = rev(c('grey10'))) +
+  theme_bw() +
+  ylim(c(0,1))
+
+ggsave('clubhouse_retention.png', height = 6, width = 10)
+
+```
+
+```{r}
+
+#disney time
+disney_data <- app_data %>% 
+  filter(app == 'Disney +') %>% 
+  mutate(week = row_number())
+
+optimized <- optim(par = c(.5, .5),
+     fn = ret_functional,
+     f = 'exp',
+     data = disney_data %>% 
+       filter(week >= 31) %>% 
+       mutate(week = row_number()),
+     lower = c(0),
+     upper = c(1))
+
+optimized
+
+disney_retention <- data.frame(app = 'Disney +',
+                                  day_tenure = seq(1,365), 
+                                  retained_pct = exponential(optimized$par[1], optimized$par[2], seq(1, 365))
+                                  )
+
+ggplot(disney_retention, aes(x = day_tenure, y = retained_pct)) +
+  geom_line() +
+  theme_minimal() +
+  xlab('Tenure in Days') +
+  ylab('% DAP')
+```
+
+```{r}
+
+#among us time
+among_us <- app_data %>% 
+  filter(app == 'Among Us') %>% 
+  mutate(week = row_number())
+
+optimized <- optim(par = c(.5, .5),
+     fn = ret_functional,
+     f = 'exp',
+     data = among_us %>% 
+       filter(week >= 31) %>% 
+       mutate(week = row_number()),
+     lower = c(0),
+     upper = c(1))
+
+optimized
+
+among_us_retention <- data.frame(app = 'Among Us',
+                                  day_tenure = seq(1,365), 
+                                  retained_pct = exponential(optimized$par[1], optimized$par[2], seq(1, 365))
+                                  )
+
+ggplot(among_us_retention, aes(x = day_tenure, y = retained_pct)) +
+  geom_line() +
+  theme_minimal() +
+  xlab('Tenure in Days') +
+  ylab('% DAP')
+
+```
+
+```{r}
+both_retention <- bind_rows(tiktok_retention, clubhouse_retention, among_us_retention)
+
+ggplot(both_retention, aes(x = day_tenure, y = retained_pct, color = app)) +
+  geom_line(size = 2) +
+  theme_dark() +
+  guides(color = FALSE) +
+  xlab("Days Since Install") +
+  ylab("% MAU Retained") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  scale_color_manual(values = rev(c('#69C9D0', 'grey10', 'red'))) +
+  theme_bw() +
+  ylim(c(0,1))
+
+ggsave('retention_by_app_among_us.png', height = 6, width = 10)
+```
+
+
+```{r}
+
+##Clubhouse Cohort Analysis
+df_cohorts <- data.frame()
+run = 0
+
+time_period = 90
+
+for (month_start in seq(1, nrow(clubhouse_data), time_period)) {
+  run = run + 1
+  month_end <- min(month_start + time_period - 1, nrow(clubhouse_data))
+  
+  
+  ##first run
+  if (run == 1) {
+    
+    #get month data
+    month <- clubhouse_data[month_start:month_end,]
+  
+    #optimize
+    current_month_optimized <- optim(par = c(.5, .5),
+       fn = ret_functional,
+       f = 'exp',
+       data = month,
+       lower = c(0),
+       upper = c(1))
+    
+    #run preds
+    month_data <- data.frame(cohort = run, 
+                             day = seq(1,time_period),
+                             values = exponential(current_month_optimized$par[1], current_month_optimized$par[2], seq(1,time_period))
+    )
+    
+    #bind to df
+    df_cohorts <- bind_rows(df_cohorts, month_data)
+  } else {
+    ##all other runs
+    
+    
+    #predict DAP up to the latest day
+    #1. adjust predictions to go from 2->31 or 4->33 instead of 1->30
+    #2. Multiply predictions by downloads to get DAUs
+    #3. Create a DF for new month
+    #4. Subtract DAUs from new month dataframe
+    #5. Run optimization above
+    dau_frame <- c()
+    k = 2
+    for (day in month_start:month_end) {
+      #1. Adjust predictions to go from 3->32 etc...
+      old_ret_values <- exponential(current_month_optimized$par[1], current_month_optimized$par[2], seq(k, day))
+      
+      #2 Multiply predictions by downloads to get DAUs
+      dau <- sum(old_ret_values * month$downloads)
+      dau_frame <- append(dau_frame, dau)
+      
+      k <- k + 1
+    }
+    
+    #3 Create DF for new month
+    month <- clubhouse_data[month_start:month_end,]
+    
+    #4 Subtract DAUs
+    month$dau <- pmax(month$dau - dau_frame, 0)
+    month$week <- month$week - month_start + 1
+    
+    #5 Run optimization
+    current_month_optimized <- optim(par = c(.5, .5),
+       fn = ret_functional,
+       f = 'exp',
+       data = month,
+       lower = c(0.1),
+       upper = c(1)
+       )
+    
+    #run preds
+    month_data <- data.frame(cohort = run, 
+                             day = seq(1,time_period),
+                             values = exponential(current_month_optimized$par[1], current_month_optimized$par[2], seq(1,time_period)))
+    
+    
+    #bind to df
+    df_cohorts <- bind_rows(df_cohorts, month_data)
+  }
+  
+}
+```
+
+```{r}
+
+#plot cohorts
+ggplot(df_cohorts,
+       aes(x = day,
+           y = values,
+           color = as.factor(cohort))) +
+  geom_line() +
+  theme_minimal() +
+  scale_color_viridis_d() +
+  geom_text_repel(data = . %>% 
+              group_by(cohort) %>% 
+              arrange(-day) %>% 
+              slice(1), aes(x = day + 1, y = values, color = as.factor(cohort), label = cohort)) +
+  xlim(c(0, time_period + 4)) +
+  ylim(c(-.1, 1.1)) +
+  guides(color = FALSE) +
+  ylab('% of DAP Retained') +
+  scale_y_continuous(labels = scales::percent_format())
+```
+
+```{r}
+
+#Tiktok vs Clubhouse days since first operating
+app_data %>% 
+  filter(app == 'TikTok')
+tt_and_ch <- bind_rows(clubhouse_data, tiktok_data)
+ggplot(tt_and_ch %>% 
+         filter(!between(week, 370, 380)), aes(x = week, y = round(dau/ 1000), color = app)) +
+  geom_line() +
+  geom_line(size = 2) +
+  guides(color = FALSE) +
+  xlab("Days Since First on App Store") +
+  ylab("US DAU (thousands)") +
+  scale_color_manual(values = rev(c('#69C9D0', '#F3F1E6'))) +
+  theme_solarized_2(light = FALSE) +
+  geom_vline(xintercept = 365)
+
+
+ggplot(tt_and_ch %>% 
+         filter(!between(week, 370, 380)), aes(x = as.Date(ds), y = round(dau/ 1000), color = app)) +
+  geom_line() +
+  geom_line(size = 2) +
+  guides(color = FALSE) +
+  xlab("Days Since First on App Store") +
+  ylab("US DAU (thousands)") +
+  scale_color_manual(values = rev(c('#69C9D0', '#F3F1E6'))) +
+  theme_solarized_2(light = FALSE) +
+  geom_vline(xintercept = 365)
+```
+
+
+```{r}
+
+app_data %>% 
+  filter(app %in% c('Clubhouse', 
+                    'Among Us', 
+                    'TikTok', 
+                    'Roblox', 
+                    'Discord',
+                    'Facebook', 
+                    'Spotify'),
+         as.Date(ds) > as.Date('2020-01-01')) %>% 
+  ggplot(., aes(x = as.Date(ds), y = dau_over_mau, color = app)) +
+  geom_line(aes(size = app=='Clubhouse')) +
+  geom_text(data = . %>% 
+              group_by(app) %>% 
+              arrange(desc(ds)) %>% 
+              slice(1), 
+            aes(x = as.Date(ds), y = dau_over_mau, label = paste0(app, ' = ', round(dau_over_mau, 2)*100, '%')),
+            hjust = -.1,
+            size = 4
+              ) +
+  theme_minimal() +
+  guides(color = FALSE) +
+  guides(size = FALSE) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  scale_color_manual(values = tol(c(7))) +
+  theme(
+    axis.title.x = element_blank() 
+  ) +
+  ylab("DAU / MAU") +
+  scale_x_date(date_labels = "%b %Y", limits = c(as.Date('2020-01-01'), as.Date('2021-10-16'))) +
+  scale_size_manual(values = c(1, 2))
+
+ggsave('dau_mau.png', height = 6, width = 10)
+```
+
+
+
+```{r}
+
+
+#debug
+#cleaned up
+ret <- function(train_data, test_data, f, params) {
+  squares <- apply(test_data, 1, function(x) {
+    wau <- x[1]
+    week <- x[2]
+    
+    train_inner <- train_data[1:(week - min(train_data$week) + 1),]
+    
+    if(f == 'exp') {
+      v <- sapply(week - train_inner$week + 1, function(x) {
+        exponential(params[1], params[2], x)
+      })
+    } else if (f == 'log') {
+      v <- sapply(week - train_inner$week + 1, function(x) {
+        logarithmic(params[1], params[2], x)
+      })
+    } else if (f== 'div') {
+      v <- sapply(week - train_inner$week + 1, function(x) {
+        divisive(params[1], params[2], x)
+      })
+    } else {
+      break
+    }
+    
+    preds <- train_inner$installs * v
+    
+    square <- (sum(preds) - wau)^2
+  })
+  
+  sum_of_squares <- sum(squares)
+  return(sum_of_squares)
+}
+
+ret(train_data, test_data, 'exp', c(.6, .9))
+
+
+
+
+
+
+
+
+
+
+#debug
+apply(clubhouse_data_test, 1, function(x) {
+  dau <- x[dau_index]
+  week <- x[week_index]
+  
+  train_small <- data[1:week,]
+  
+  max_week <- max(train_small$week)
+  train_small$tenure <- max_week - train_small$week + 1
+  
+  sum_retained <- 0 
+  for (i in 1:nrow(train_small)) {
+    retained_dau <- train_small[tenure == i, ]$downloads * pars[i]
+    sum_retained <- sum_retained + retained_dau
+  }
+})
+
+
+
+#Debug panel
+pars <- rep(.7, nrow(clubhouse_data_test))
+square <- 0
+sum_of_squares <- 0
+
+dau_index <- which(colnames(clubhouse_data_test) == 'dau')
+week_index <- which(colnames(clubhouse_data_test) == 'week')
+
+#build out param function
+i = 3
+for (i in 1:nrow(clubhouse_data_test)) {
+  x <- clubhouse_data_test[i,]
+  dau <- x[,dau_index]$dau
+  week <- x[,week_index]$week
+  
+  train_small <- clubhouse_data_test[1:week,]
+  
+  max_week <- max(train_small$week)
+  train_small$tenure <- max_week - train_small$week + 1
+  
+  sum_retained <- 0 
+  for (i in 1:nrow(train_small)) {
+    retained_dau <- train_small[train_small$tenure == i, ]$downloads * pars[i]
+    sum_retained <- sum_retained + retained_dau
+  }
+  
+  square <- (dau - sum_retained)^2
+  
+  sum_of_squares <- sum_of_squares + square
+  
+  
+}
+sum_of_squares
+
+
+pars <- c(.5, .5)
+pars
+
+x <- clubhouse_data_test[1,]
+
+  square <- 0
+  sum_of_squares <- 0
+  max_week <- 1
+  
+  dau_index <- which(colnames(clubhouse_data_test) == 'dau')
+  week_index <- which(colnames(clubhouse_data_test) == 'week')
+  
+  #build out param function
+  
+    dau <- x[,dau_index]
+    week <- x[,week_index]
+    
+    train_small <- clubhouse_data_test[1:week$week,]
+    
+    max_week <- max(train_small$week)
+    train_small$tenure <- max_week - train_small$week + 1
+    
+    
+    params
+    sum_retained <- 0 
+    for (i in 1:nrow(train_small)) {
+      retained_dau <- train_small[train_small$tenure == i, ]$downloads * pars[i]
+      sum_retained <- sum_retained + retained_dau
+    }
+    
+    square <- (dau - sum_retained)^2
+    
+    sum_of_squares <- sum_of_squares + square
+```
+
